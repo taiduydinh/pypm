@@ -1,4 +1,5 @@
 - Sandesh Pathak
+- Salehin Haque (salehin717)
 # PyPM
 
 **PyPM** is an open-source Python library for **pattern mining**.  
