@@ -1,147 +1,46 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
-
-from __future__ import annotations
-from dataclasses import dataclass
-from pathlib import Path
-import argparse
+import os
 import time
-import sys
-from typing import Dict, List, Optional, Tuple, Set
+import tracemalloc
+import traceback
 
 
-# ----------------------------------------------------------------------
-# MemoryLogger (SPMF-like)
-# ----------------------------------------------------------------------
-class MemoryLogger:
-    _instance: Optional["MemoryLogger"] = None
-
-    def __init__(self) -> None:
-        self._max_memory_mb: float = 0.0
-
-    @staticmethod
-    def getInstance() -> "MemoryLogger":
-        if MemoryLogger._instance is None:
-            MemoryLogger._instance = MemoryLogger()
-        return MemoryLogger._instance
-
-    def getMaxMemory(self) -> float:
-        return self._max_memory_mb
-
-    def reset(self) -> None:
-        self._max_memory_mb = 0.0
-
-    def checkMemory(self) -> float:
-        # Best-effort cross-platform memory measure.
-        mem_mb = 0.0
-        try:
-            import resource  # Unix (macOS/Linux)
-            usage = resource.getrusage(resource.RUSAGE_SELF)
-            rss = float(usage.ru_maxrss)
-            if sys.platform == "darwin":
-                mem_mb = rss / (1024.0 * 1024.0)  # bytes -> MB (macOS)
-            else:
-                mem_mb = rss / 1024.0  # KB -> MB (Linux)
-        except Exception:
-            mem_mb = self._max_memory_mb
-
-        if mem_mb > self._max_memory_mb:
-            self._max_memory_mb = mem_mb
-        return mem_mb
-
-
-# ----------------------------------------------------------------------
-# Data structures
-# ----------------------------------------------------------------------
-@dataclass
-class Element:
-    tid: int
-    iutils: int
-    rutils: int
-
-
-class UtilityList:
-    def __init__(self, item: int) -> None:
-        self.item: int = int(item)
-        self.sumIutils: int = 0
-        self.sumRutils: int = 0
-        self.elements: List[Element] = []
-
-    def addElement(self, element: Element) -> None:
-        self.sumIutils += element.iutils
-        self.sumRutils += element.rutils
-        self.elements.append(element)
-
-    def getSupport(self) -> int:
-        return len(self.elements)
-
-    def getUtils(self) -> int:
-        return self.sumIutils
-
-
-@dataclass
-class Itemset:
-    items: Tuple[int, ...]
-    utility: int
-    support: int
-
-    def __str__(self) -> str:
-        return f"{list(self.items)} utility : {self.utility} support:  {self.support}"
-
-
-@dataclass
-class PairItemUtility:
-    item: int = 0
-    utility: int = 0
-
-    def __str__(self) -> str:
-        return f"[{self.item},{self.utility}]"
-
-
-# ----------------------------------------------------------------------
-# AlgoCLS_miner (Python port)
-# ----------------------------------------------------------------------
 class AlgoCLS_miner:
-    def __init__(self, useChain_EUCP: bool, useCoverage: bool, useLBP: bool, usePreCheck: bool) -> None:
-        self.useChain_EUCP = bool(useChain_EUCP)
-        self.useCoverage = bool(useCoverage)
-        self.useLBP = bool(useLBP)
-        self.usePreCheck = bool(usePreCheck)
-
-        self.startTimestamp: int = 0
-        self.endTimestamp: int = 0
-
-        self.chuidCount: int = 0
-        self.candidateCount: int = 0
-
-        self.minUtility: int = 0
-        self.count1: int = 0
-        self.count2: int = 0
-
-        self.mapItemToTWU: Dict[int, int] = {}
-
-        self.mapFMAP: Dict[int, Dict[int, int]] = {}
-        self.Cov: Dict[int, List[int]] = {}
-
-        self.listItemsetsBySize: Optional[List[List[Itemset]]] = None
-        self.setOfItemsInClosedItemsets: Optional[Set[int]] = None
-
-        self._writer = None  # file handle
-
-    def runAlgorithm(self, input_path: str, minUtility: int, output_path: Optional[str]) -> Optional[List[List[Itemset]]]:
-        MemoryLogger.getInstance().reset()
-
-        self.minUtility = int(minUtility)
+    def __init__(self, useChain_EUCP, useCoverage, useLBP, usePreCheck):
+        self.startTimestamp = 0
+        self.endTimestamp = 0
         self.chuidCount = 0
         self.candidateCount = 0
+        self.mapItemToTWU = {}
+        self.writer = None
+        self.minUtility = 0
         self.count1 = 0
         self.count2 = 0
+        self.mapFMAP = None
+        self.Cov = None
+        self.listItemsetsBySize = None
+        self.setOfItemsInClosedItemsets = None
+        self.useChain_EUCP = useChain_EUCP
+        self.useCoverage = useCoverage
+        self.useLBP = useLBP
+        self.usePreCheck = usePreCheck
 
-        if output_path is not None:
-            outp = Path(output_path)
-            outp.parent.mkdir(parents=True, exist_ok=True)
-            self._writer = open(outp, "w", encoding="utf-8", newline="\n")
+    def saveToMemory(self, itemset, sumIutils, support):
+        if len(itemset) >= len(self.listItemsetsBySize):
+            i = len(self.listItemsetsBySize)
+            while i <= len(itemset):
+                self.listItemsetsBySize.append([])
+                i += 1
+        listToAdd = self.listItemsetsBySize[len(itemset)]
+        listToAdd.append(Itemset(itemset, sumIutils, support))
+        for item in itemset:
+            self.setOfItemsInClosedItemsets.add(item)
+
+    def runAlgorithm(self, input, minUtility, output):
+        MemoryLogger.getInstance().reset()
+        self.minUtility = minUtility
+
+        if output is not None:
+            self.writer = open(output, "w", encoding="utf-8")
         else:
             self.listItemsetsBySize = []
             self.setOfItemsInClosedItemsets = set()
@@ -152,130 +51,139 @@ class AlgoCLS_miner:
             self.Cov = {}
 
         self.startTimestamp = int(time.time() * 1000)
-
-        # 1) First DB scan: compute TWU per item
         self.mapItemToTWU = {}
-        with open(input_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line or line[0] in "#%@":
-                    continue
-                parts = line.split(":")
-                items_str = parts[0].strip().split()
-                tu = int(parts[1].strip())
-                for it_s in items_str:
-                    it = int(it_s)
-                    self.mapItemToTWU[it] = self.mapItemToTWU.get(it, 0) + tu
 
-        # 2) Create UtilityList objects for items with TWU >= minUtility
-        listOfUtilityLists: List[UtilityList] = []
-        mapItemToUtilityList: Dict[int, UtilityList] = {}
+        try:
+            with open(input, "r", encoding="utf-8") as myInput:
+                for thisLine in myInput:
+                    thisLine = thisLine.strip()
+                    if (
+                        thisLine == ""
+                        or thisLine[0] == "#"
+                        or thisLine[0] == "%"
+                        or thisLine[0] == "@"
+                    ):
+                        continue
+                    split = thisLine.split(":")
+                    items = split[0].split(" ")
+                    transactionUtility = int(split[1])
+                    for token in items:
+                        item = int(token)
+                        twu = self.mapItemToTWU.get(item)
+                        twu = transactionUtility if twu is None else twu + transactionUtility
+                        self.mapItemToTWU[item] = twu
+        except Exception:
+            traceback.print_exc()
 
-        for item, twu in self.mapItemToTWU.items():
-            if twu >= self.minUtility:
-                ul = UtilityList(item)
-                mapItemToUtilityList[item] = ul
-                listOfUtilityLists.append(ul)
+        listOfUtilityLists = []
+        mapItemToUtilityList = {}
+        for item in self.mapItemToTWU:
+            if self.mapItemToTWU[item] >= minUtility:
+                uList = UtilityList(item)
+                mapItemToUtilityList[item] = uList
+                listOfUtilityLists.append(uList)
 
-        # Sort by TWU asc, then lexical (same as Java compareItems)
         listOfUtilityLists.sort(key=lambda ul: (self.mapItemToTWU[ul.item], ul.item))
 
-        # 3) Second DB scan: build utility lists + EUCP map
-        tid = 0
-        with open(input_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line or line[0] in "#%@":
-                    continue
-                tid += 1
-                parts = line.split(":")
-                items = parts[0].strip().split()
-                utils = parts[2].strip().split()
+        try:
+            with open(input, "r", encoding="utf-8") as myInput:
+                tid = 0
+                for thisLine in myInput:
+                    thisLine = thisLine.strip()
+                    if (
+                        thisLine == ""
+                        or thisLine[0] == "#"
+                        or thisLine[0] == "%"
+                        or thisLine[0] == "@"
+                    ):
+                        continue
+                    tid += 1
+                    split = thisLine.split(":")
+                    items = split[0].split(" ")
+                    utilityValues = split[2].split(" ")
 
-                newTU = 0
-                revised: List[PairItemUtility] = []
-                for i in range(len(items)):
-                    pair = PairItemUtility(int(items[i]), int(utils[i]))
-                    if self.mapItemToTWU.get(pair.item, 0) >= self.minUtility:
-                        revised.append(pair)
-                        newTU += pair.utility
+                    newTU = 0
+                    revisedTransaction = []
 
-                revised.sort(key=lambda p: (self.mapItemToTWU[p.item], p.item))
+                    for i in range(len(items)):
+                        pair = PairItemUtility()
+                        pair.item = int(items[i])
+                        pair.utility = int(utilityValues[i])
+                        if self.mapItemToTWU.get(pair.item, 0) >= minUtility:
+                            revisedTransaction.append(pair)
+                            newTU += pair.utility
 
-                remainingUtility = newTU
-                for i in range(len(revised)):
-                    pair = revised[i]
-                    remainingUtility -= pair.utility
+                    revisedTransaction.sort(
+                        key=lambda p: (self.mapItemToTWU[p.item], p.item)
+                    )
 
-                    ul_item = mapItemToUtilityList[pair.item]
-                    ul_item.addElement(Element(tid, pair.utility, remainingUtility))
+                    remainingUtility = newTU
+                    for i in range(len(revisedTransaction)):
+                        pair = revisedTransaction[i]
+                        remainingUtility -= pair.utility
 
-                    if self.useChain_EUCP:
-                        mapItem = self.mapFMAP.get(pair.item)
-                        if mapItem is None:
-                            mapItem = {}
-                            self.mapFMAP[pair.item] = mapItem
-                        for j in range(i + 1, len(revised)):
-                            after = revised[j]
-                            prev = mapItem.get(after.item)
-                            if prev is None:
-                                mapItem[after.item] = newTU
-                            else:
-                                mapItem[after.item] = prev + newTU
+                        utilityListOfItem = mapItemToUtilityList[pair.item]
+                        element = Element(tid, pair.utility, remainingUtility)
+                        utilityListOfItem.addElement(element)
 
-        # 4) Coverage construction
+                        if self.useChain_EUCP:
+                            mapFMAPItem = self.mapFMAP.get(pair.item)
+                            if mapFMAPItem is None:
+                                mapFMAPItem = {}
+                                self.mapFMAP[pair.item] = mapFMAPItem
+
+                            for j in range(i + 1, len(revisedTransaction)):
+                                pairAfter = revisedTransaction[j]
+                                twuSum = mapFMAPItem.get(pairAfter.item)
+                                if twuSum is None:
+                                    mapFMAPItem[pairAfter.item] = newTU
+                                else:
+                                    mapFMAPItem[pairAfter.item] = twuSum + newTU
+        except Exception:
+            traceback.print_exc()
+
         if self.useCoverage:
-            self._CoverageConstructProcedure(listOfUtilityLists)
+            self.CoverageConstructProcedure(listOfUtilityLists)
 
         MemoryLogger.getInstance().checkMemory()
 
-        # 5) Recursive mining
-        self._CLS_Miner(True, [], None, [], listOfUtilityLists)
+        self.CLS_Miner(True, [], None, [], listOfUtilityLists)
 
         MemoryLogger.getInstance().checkMemory()
 
-        if self._writer is not None:
-            self._writer.close()
-            self._writer = None
+        if self.writer is not None:
+            self.writer.close()
 
         self.endTimestamp = int(time.time() * 1000)
         return self.listItemsetsBySize
 
-    def _CLS_Miner(
-        self,
-        firstTime: bool,
-        closedSet: List[int],
-        closedSetUL: Optional[UtilityList],
-        preset: List[UtilityList],
-        postset: List[UtilityList],
-    ) -> None:
+    def CLS_Miner(self, firstTime, closedSet, closedSetUL, preset, postset):
         for iUL in postset:
             if firstTime:
                 newgen_TIDs = iUL
             else:
-                assert closedSetUL is not None
-                newgen_TIDs = self._construct(closedSetUL, iUL)
+                newgen_TIDs = self.construct(closedSetUL, iUL)
 
-            if self._isPassingHUIPruning(newgen_TIDs):
-                newGen = self._appendItem(closedSet, iUL.item)
+            if self.isPassingHUIPruning(newgen_TIDs):
+                newGen = self.appendItem(closedSet, iUL.item)
 
-                if not self._improved_is_dup(newgen_TIDs, preset):
+                if not self.improved_is_dup(newgen_TIDs, preset):
                     closedSetNew = newGen
                     closedsetNewTIDs = newgen_TIDs
-                    postsetNew: List[UtilityList] = []
-
+                    postsetNew = []
                     passedHUIPruning = True
+
                     for jUL in postset:
-                        if jUL.item == iUL.item or self._compareItems(jUL.item, iUL.item) < 0:
+                        if jUL.item == iUL.item or self.compareItems(jUL.item, iUL.item) < 0:
                             continue
 
-                        if self.useLBP and self._calculate_Con(newgen_TIDs, jUL) < self.minUtility:
+                        if self.useLBP and self.calculate_Con(newgen_TIDs, jUL) < self.minUtility:
                             continue
 
                         if self.useChain_EUCP:
                             shouldpassEUCS = False
-                            for it in closedSetNew:
-                                shouldpassEUCS = self._checkGenEUCPStrategy(it, jUL.item)
+                            for item in closedSetNew:
+                                shouldpassEUCS = self.checkGenEUCPStrategy(item, jUL.item)
                                 if shouldpassEUCS:
                                     break
                             if shouldpassEUCS:
@@ -283,23 +191,27 @@ class AlgoCLS_miner:
                                 continue
 
                         if self.usePreCheck or self.useCoverage:
-                            cond_cov = self.useCoverage and self._ifBelongToCov(iUL.item, jUL.item)
-                            cond_pre = self.usePreCheck and (
-                                self._preCheckContain(jUL, newgen_TIDs) and self._containsAllTIDS(jUL, newgen_TIDs)
+                            should_merge = (
+                                (self.useCoverage and self.ifBelongToCov(iUL.item, jUL.item))
+                                or (
+                                    self.usePreCheck
+                                    and self.preCheckContain(jUL, newgen_TIDs)
+                                    and self.containsAllTIDS(jUL, newgen_TIDs)
+                                )
                             )
-                            if cond_cov or cond_pre:
-                                closedSetNew = self._appendItem(closedSetNew, jUL.item)
-                                closedsetNewTIDs = self._construct(closedsetNewTIDs, jUL)
-                                if not self._isPassingHUIPruning(closedsetNewTIDs):
+                            if should_merge:
+                                closedSetNew = self.appendItem(closedSetNew, jUL.item)
+                                closedsetNewTIDs = self.construct(closedsetNewTIDs, jUL)
+                                if not self.isPassingHUIPruning(closedsetNewTIDs):
                                     passedHUIPruning = False
                                     break
                             else:
                                 postsetNew.append(jUL)
                         else:
-                            if self._containsAllTIDS(jUL, newgen_TIDs):
-                                closedSetNew = self._appendItem(closedSetNew, jUL.item)
-                                closedsetNewTIDs = self._construct(closedsetNewTIDs, jUL)
-                                if not self._isPassingHUIPruning(closedsetNewTIDs):
+                            if self.containsAllTIDS(jUL, newgen_TIDs):
+                                closedSetNew = self.appendItem(closedSetNew, jUL.item)
+                                closedsetNewTIDs = self.construct(closedsetNewTIDs, jUL)
+                                if not self.isPassingHUIPruning(closedsetNewTIDs):
                                     passedHUIPruning = False
                                     break
                             else:
@@ -309,67 +221,85 @@ class AlgoCLS_miner:
 
                     if passedHUIPruning:
                         if closedsetNewTIDs.sumIutils >= self.minUtility:
-                            self._saveCHUI(closedSetNew, closedsetNewTIDs.sumIutils, len(closedsetNewTIDs.elements))
+                            self.saveCHUI(
+                                closedSetNew,
+                                closedsetNewTIDs.sumIutils,
+                                len(closedsetNewTIDs.elements),
+                            )
 
                         presetNew = list(preset)
-                        self._CLS_Miner(False, closedSetNew, closedsetNewTIDs, presetNew, postsetNew)
+                        self.CLS_Miner(False, closedSetNew, closedsetNewTIDs, presetNew, postsetNew)
 
                     preset.append(iUL)
 
-    def _isPassingHUIPruning(self, ul: UtilityList) -> bool:
-        return (ul.sumIutils + ul.sumRutils) >= self.minUtility
+    def isPassingHUIPruning(self, utilitylist):
+        return utilitylist.sumIutils + utilitylist.sumRutils >= self.minUtility
 
-    def _containsAllTIDS(self, ul1: UtilityList, ul2: UtilityList) -> bool:
-        for ex in ul2.elements:
-            ey = self._findElementWithTID(ul1, ex.tid)
-            if ey is None:
+    def containsAllTIDS(self, ul1, ul2):
+        for elmX in ul2.elements:
+            elmE = self.findElementWithTID(ul1, elmX.tid)
+            if elmE is None:
                 return False
         return True
 
-    def _checkGenEUCPStrategy(self, itemX: int, itemY: int) -> bool:
-        if self._compareItems(itemX, itemY) > 0:
-            itemX, itemY = itemY, itemX
-        mp = self.mapFMAP.get(itemX)
-        if mp is not None:
-            twuF = mp.get(itemY)
+    def checkEUCPStrategy(self, itemX, itemY):
+        mapTWUF = self.mapFMAP.get(itemX)
+        if mapTWUF is not None:
+            twuF = mapTWUF.get(itemY)
             if twuF is None or twuF < self.minUtility:
                 return True
         return False
 
-    def _appendItem(self, itemset: List[int], item: int) -> List[int]:
-        return itemset + [int(item)]
+    def checkGenEUCPStrategy(self, itemX, itemY):
+        if self.compareItems(itemX, itemY) > 0:
+            itemX, itemY = itemY, itemX
+        mapTWUF = self.mapFMAP.get(itemX)
+        if mapTWUF is not None:
+            twuF = mapTWUF.get(itemY)
+            if twuF is None or twuF < self.minUtility:
+                return True
+        return False
 
-    def _calculate_Con(self, X: UtilityList, Y: UtilityList) -> int:
-        return int(X.sumIutils + X.sumRutils - self._cdiff(X, Y) * self._getMinValueofUL(X))
+    def appendItem(self, itemset, item):
+        newgen = [0] * (len(itemset) + 1)
+        newgen[: len(itemset)] = itemset
+        newgen[len(itemset)] = item
+        return newgen
 
-    def _cdiff(self, X: UtilityList, Y: UtilityList) -> int:
+    def calculate_Con(self, X, Y):
+        con = int(X.sumIutils + X.sumRutils - self.cdiff(X, Y) * self.getMinValueofUL(X))
+        return con
+
+    def Tidset_diff(self, X, Y):
+        return abs(X.getSupport() - Y.getSupport())
+
+    def cdiff(self, X, Y):
         if X.getSupport() < Y.getSupport():
             return 0
         return X.getSupport() - Y.getSupport()
 
-    def _getMinValueofUL(self, X: UtilityList) -> int:
-        if not X.elements:
-            return 0
-        minv = X.elements[0].iutils + X.elements[0].rutils
-        for e in X.elements:
-            v = e.iutils + e.rutils
-            if v < minv:
-                minv = v
-        return minv
+    def getMinValueofUL(self, X):
+        minValue = X.elements[0].iutils + X.elements[0].rutils
+        for element in X.elements:
+            value = element.iutils + element.rutils
+            if value < minValue:
+                minValue = value
+        return minValue
 
-    def _improved_is_dup(self, newgenTIDs: UtilityList, preset: List[UtilityList]) -> bool:
+    def improved_is_dup(self, newgenTIDs, preset):
         for j in preset:
-            if self._preCheckContain(j, newgenTIDs):
+            if self.preCheckContain(j, newgenTIDs):
                 containsAll = True
-                for ex in newgenTIDs.elements:
-                    if self._findElementWithTID(j, ex.tid) is None:
+                for elmX in newgenTIDs.elements:
+                    elmE = self.findElementWithTID(j, elmX.tid)
+                    if elmE is None:
                         containsAll = False
                         break
                 if containsAll:
                     return True
         return False
 
-    def _preCheckContain(self, X: UtilityList, Y: UtilityList) -> bool:
+    def preCheckContain(self, X, Y):
         lenX = X.getSupport()
         lenY = Y.getSupport()
         if lenX < lenY:
@@ -381,138 +311,191 @@ class AlgoCLS_miner:
                 return False
         return True
 
-    def _construct(self, uX: UtilityList, uE: UtilityList) -> UtilityList:
+    def is_dup(self, newgenTIDs, preset):
+        for j in preset:
+            containsAll = True
+            for elmX in newgenTIDs.elements:
+                elmE = self.findElementWithTID(j, elmX.tid)
+                if elmE is None:
+                    containsAll = False
+                    break
+            if containsAll:
+                return True
+        return False
+
+    def construct(self, uX, uE):
         uXE = UtilityList(uE.item)
         for elmX in uX.elements:
-            elmE = self._findElementWithTID(uE, elmX.tid)
+            elmE = self.findElementWithTID(uE, elmX.tid)
             if elmE is None:
                 continue
             elmXe = Element(elmX.tid, elmX.iutils + elmE.iutils, elmX.rutils - elmE.iutils)
             uXE.addElement(elmXe)
         return uXE
 
-    def _findElementWithTID(self, ulist: UtilityList, tid: int) -> Optional[Element]:
-        lst = ulist.elements
+    def findElementWithTID(self, ulist, tid):
+        elems = ulist.elements
         first = 0
-        last = len(lst) - 1
+        last = len(elems) - 1
+
         while first <= last:
             middle = (first + last) >> 1
-            mtid = lst[middle].tid
-            if mtid < tid:
+            if elems[middle].tid < tid:
                 first = middle + 1
-            elif mtid > tid:
+            elif elems[middle].tid > tid:
                 last = middle - 1
             else:
-                return lst[middle]
+                return elems[middle]
         return None
 
-    def _CoverageConstructProcedure(self, listOfUtilityLists: List[UtilityList]) -> None:
+    def binarySearch(self, list_values, value):
+        first = 0
+        last = len(list_values) - 1
+        while first <= last:
+            middle = (first + last) >> 1
+            if int(list_values[middle]) < value:
+                first = middle + 1
+            elif int(list_values[middle]) > value:
+                last = middle - 1
+            else:
+                return int(list_values[middle])
+        return -1
+
+    def CoverageConstructProcedure(self, listOfUtilityLists):
         for ulX in listOfUtilityLists:
             itemX = ulX.item
-            mapTWUF = self.mapFMAP.get(itemX)
-            listofX: List[int] = []
-            for ulY in listOfUtilityLists:
-                itemY = ulY.item
-                if itemX == itemY or self._compareItems(itemY, itemX) < 0:
+            mapTWUF = self.mapFMAP.get(itemX) if self.mapFMAP is not None else None
+            listofX = []
+            for uly in listOfUtilityLists:
+                itemY = uly.item
+                if itemX == itemY or self.compareItems(itemY, itemX) < 0:
                     continue
                 if mapTWUF is not None and itemY in mapTWUF:
-                    eucs_xy = mapTWUF[itemY]
-                    if eucs_xy == self.mapItemToTWU.get(itemX, 0):
+                    EUCSXY = mapTWUF[itemY]
+                    if EUCSXY == self.mapItemToTWU.get(itemX):
                         listofX.append(itemY)
             self.Cov[itemX] = listofX
 
-    def _ifBelongToCov(self, x: int, y: int) -> bool:
+    def ifBelongToCov(self, x, y):
         return y in self.Cov.get(x, [])
 
-    def _saveCHUI(self, itemset: List[int], sumIutils: int, support: int) -> None:
+    def saveCHUI(self, itemset, sumIutils, support):
         self.chuidCount += 1
+        if self.writer is None:
+            self.saveToMemory(itemset, sumIutils, support)
+        else:
+            buffer_parts = []
+            for item in itemset:
+                buffer_parts.append(str(item))
+            buffer = " ".join(buffer_parts) + " "
+            buffer += "#SUP: " + str(support)
+            buffer += " #UTIL: " + str(sumIutils)
+            self.writer.write(buffer)
+            self.writer.write("\n")
 
-        if self._writer is None:
-            if self.listItemsetsBySize is None or self.setOfItemsInClosedItemsets is None:
-                self.listItemsetsBySize = []
-                self.setOfItemsInClosedItemsets = set()
-            self._saveToMemory(itemset, sumIutils, support)
-            return
+    def printStats(self):
+        print("=============  CLS-Miner ALGORITHM SPMF 1.0 - STATS =============")
+        print(" Total time ~ " + str(self.endTimestamp - self.startTimestamp) + " ms")
+        print(" Memory ~ " + str(MemoryLogger.getInstance().getMaxMemory()) + " MB")
+        print(" Closed High-utility itemsets count : " + str(self.chuidCount))
+        print(" Candidate count : " + str(self.candidateCount))
+        print("=====================================================")
 
-        # Keep Java's trailing space after last item
-        buf = []
-        for it in itemset:
-            buf.append(f"{it} ")
-        buf.append(f"#SUP: {support} #UTIL: {sumIutils}")
-        self._writer.write("".join(buf))
-        self._writer.write("\n")
-
-    def _saveToMemory(self, itemset: List[int], sumIutils: int, support: int) -> None:
-        assert self.listItemsetsBySize is not None
-        assert self.setOfItemsInClosedItemsets is not None
-
-        k = len(itemset)
-        while len(self.listItemsetsBySize) <= k:
-            self.listItemsetsBySize.append([])
-
-        self.listItemsetsBySize[k].append(Itemset(tuple(itemset), int(sumIutils), int(support)))
-        for it in itemset:
-            self.setOfItemsInClosedItemsets.add(it)
-
-    def _compareItems(self, item1: int, item2: int) -> int:
+    def compareItems(self, item1, item2):
         compare = self.mapItemToTWU[item1] - self.mapItemToTWU[item2]
         return (item1 - item2) if compare == 0 else compare
 
-    def printStats(self) -> None:
-        print("=============  CLS-Miner ALGORITHM SPMF 1.0 - STATS =============")
-        print(f" Total time ~ {self.endTimestamp - self.startTimestamp} ms")
-        print(f" Memory ~ {MemoryLogger.getInstance().getMaxMemory()} MB")
-        print(f" Closed High-utility itemsets count : {self.chuidCount}")
-        print(f" Candidate count : {self.candidateCount}")
-        print("=====================================================")
+
+class Element:
+    def __init__(self, tid, iutils, rutils):
+        self.tid = tid
+        self.iutils = iutils
+        self.rutils = rutils
 
 
-# ----------------------------------------------------------------------
-# Helper: locate file like Java getResource()
-# ----------------------------------------------------------------------
-def file_to_path(filename: str) -> str:
-    here = Path(__file__).resolve().parent
-    candidates = [
-        here / filename,
-        here / "Java" / "src" / filename,
-        Path.cwd() / filename,
-        Path.cwd() / "Java" / "src" / filename,
-    ]
-    for p in candidates:
-        if p.exists():
-            return str(p.resolve())
-    tried = "\n".join([f"- {c.resolve()}" for c in candidates])
-    raise FileNotFoundError(f"Could not locate {filename}. Tried:\n{tried}")
+class Itemset:
+    def __init__(self, itemset, utility, support):
+        self.itemset = itemset
+        self.utility = utility
+        self.support = support
+
+    def toString(self):
+        return str(self.itemset) + " utility : " + str(self.utility) + " support:  " + str(self.support)
 
 
-# ----------------------------------------------------------------------
-# Main (equivalent to MainTestCLS_Miner.java)
-# ----------------------------------------------------------------------
-def main() -> None:
-    parser = argparse.ArgumentParser(description="CLS-Miner (single-file Python port)")
-    parser.add_argument("-i", "--input", help="Input utility DB file (e.g., DB_Utility.txt)")
-    parser.add_argument("-s", "--support", type=int, help="Min utility threshold (int)")
-    parser.add_argument("-o", "--output", help="Output file path (e.g., Java/src/output_py.txt)")
+class MainTestCLS_Miner:
+    @staticmethod
+    def fileToPath(filename):
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
 
-    args = parser.parse_args()
+    @staticmethod
+    def main(arg=None):
+        del arg
+        input_path = MainTestCLS_Miner.fileToPath("DB_Utility.txt")
+        min_utility = 30
+        output = MainTestCLS_Miner.fileToPath("output_python.txt")
+        clsMiner = AlgoCLS_miner(True, False, True, True)
+        clsMiner.runAlgorithm(input_path, min_utility, output)
+        clsMiner.printStats()
 
-    # ✅ If no arguments are provided → behave like Java MainTest
-    if not args.input and args.support is None and not args.output:
-        print("No arguments provided. Running in default MainTest mode...\n")
-        input_path = file_to_path("DB_Utility.txt")
-        minutil = 30
-        output_path = str((Path("Java") / "src" / "output_py.txt").resolve())
-    else:
-        if not args.input or args.support is None or not args.output:
-            parser.error("Provide all of -i/--input, -s/--support, -o/--output OR run without arguments.")
-        input_path = args.input
-        minutil = int(args.support)
-        output_path = args.output
 
-    algo = AlgoCLS_miner(True, False, True, True)
-    algo.runAlgorithm(input_path, minutil, output_path)
-    algo.printStats()
+class MemoryLogger:
+    _instance = None
+
+    def __init__(self):
+        self.maxMemory = 0.0
+        if not tracemalloc.is_tracing():
+            tracemalloc.start()
+
+    @classmethod
+    def getInstance(cls):
+        if cls._instance is None:
+            cls._instance = MemoryLogger()
+        return cls._instance
+
+    def getMaxMemory(self):
+        return self.maxMemory
+
+    def reset(self):
+        self.maxMemory = 0.0
+
+    def checkMemory(self):
+        if not tracemalloc.is_tracing():
+            tracemalloc.start()
+        currentMemory, _peak = tracemalloc.get_traced_memory()
+        currentMemoryMB = currentMemory / 1024.0 / 1024.0
+        if currentMemoryMB > self.maxMemory:
+            self.maxMemory = currentMemoryMB
+        return currentMemoryMB
+
+
+class PairItemUtility:
+    def __init__(self):
+        self.item = 0
+        self.utility = 0
+
+    def toString(self):
+        return "[" + str(self.item) + "," + str(self.utility) + "]"
+
+
+class UtilityList:
+    def __init__(self, item):
+        self.item = item
+        self.sumIutils = 0
+        self.sumRutils = 0
+        self.elements = []
+
+    def addElement(self, element):
+        self.sumIutils += element.iutils
+        self.sumRutils += element.rutils
+        self.elements.append(element)
+
+    def getSupport(self):
+        return len(self.elements)
+
+    def getUtils(self):
+        return self.sumIutils
 
 
 if __name__ == "__main__":
-    main()
+    MainTestCLS_Miner.main()
