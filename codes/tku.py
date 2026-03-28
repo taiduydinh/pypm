@@ -5,9 +5,9 @@ import os
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 INPUT_FILE = os.path.join(BASE_DIR, "DB_Utility.txt")
-OUTPUT_FILE = os.path.join(BASE_DIR, "#101_output.txt")
+OUTPUT_FILE = os.path.join(BASE_DIR, "outputs.txt")
 
-K = 4
+K = 6
 
 
 # ==========================================
