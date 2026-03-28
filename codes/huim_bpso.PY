@@ -1,455 +1,326 @@
-"""
-HUIM-BPSO: High Utility Itemset Mining using Binary Particle Swarm Optimization
-Python conversion of the Java implementation by Jerry Chun-Wei Lin, Lu Yang, Philippe Fournier-Viger (2016)
 
-Usage:
-    python huim_bpso.py                          # uses default settings
-    python huim_bpso.py --input data.txt --min_utility 40 --output output.txt
-    python huim_bpso.py --compare                # run and compare with reference output
-"""
-
-import sys
 import os
-import math
 import random
+import math
 import time
-import argparse
-from collections import defaultdict
-from copy import deepcopy
+random.seed(0)
 
+# ================= SETTINGS =================
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+INPUT_FILE = os.path.join(BASE_DIR, "contextHUIM.txt")
+OUTPUT_FILE = os.path.join(BASE_DIR, "output.txt")
 
-# ─────────────────────────────────────────────
-#  ALGORITHM CONSTANTS  (mirror Java constants)
-# ─────────────────────────────────────────────
-POP_SIZE   = 20
+MIN_UTILITY = 40  # change threshold here
+
+POP_SIZE = 40
 ITERATIONS = 10000
-C1         = 2
-C2         = 2
-W          = 0.9
+# ============================================
 
 
-# ─────────────────────────────────────────────
-#  DATA CLASSES
-# ─────────────────────────────────────────────
 class Pair:
-    """An item and its utility in a transaction."""
-    def __init__(self, item=0, utility=0):
-        self.item    = item
+    def __init__(self, item, utility):
+        self.item = item
         self.utility = utility
 
 
 class Particle:
-    """A BPSO particle (binary position vector + fitness)."""
-    def __init__(self, length=0):
-        self.X       = [0] * length   # binary position vector
+    def __init__(self, length):
+        self.X = [0] * length
         self.fitness = 0
 
-    def copy_from(self, other: "Particle"):
-        """Deep-copy another particle into self (mirrors Java copyParticle)."""
-        for i in range(len(other.X)):
-            self.X[i] = other.X[i]
+    def copy_from(self, other):
+        self.X = other.X[:]
         self.fitness = other.fitness
 
 
 class HUI:
-    """A discovered High Utility Itemset."""
-    def __init__(self, itemset: str, fitness: int):
+    def __init__(self, itemset, fitness):
         self.itemset = itemset
         self.fitness = fitness
 
 
-# ─────────────────────────────────────────────
-#  ALGORITHM CLASS
-# ─────────────────────────────────────────────
 class AlgoHUIM_BPSO:
 
     def __init__(self):
-        self.max_memory     = 0.0
-        self.start_time     = 0
-        self.end_time       = 0
-
-        self.map_item_to_twu  = {}   # TWU of every item seen
-        self.map_item_to_twu0 = {}   # TWU after pruning items below minUtil
-
-        self.twu_pattern  = []       # sorted list of promising items
-        self.database     = []       # list of transactions; each = list of Pair
-        self.hui_sets     = []       # discovered HUIs
-        self.percentage   = []       # roulette-wheel cumulative percentages
-
-        self.population   = []       # current swarm
-        self.p_best       = []       # personal best per particle
-        self.g_best       = None     # global best particle
-        self.V            = []       # velocities  [pop_size][twuPattern.size]
-
-    # ── public entry point ──────────────────────────────────────────────────
-    def run_algorithm(self, input_path: str, output_path: str, min_utility: int):
-        self.max_memory = 0.0
-        self.start_time = time.time()
-
-        # Reset mutable state so repeated calls on the same object are deterministic.
-        self.twu_pattern = []
+        self.mapItemToTWU = {}
+        self.mapItemToTWU0 = {}
+        self.twuPattern = []
         self.database = []
-        self.hui_sets = []
-        self.percentage = []
         self.population = []
-        self.p_best = []
-        self.g_best = None
+        self.pBest = []
+        self.gBest = None
         self.V = []
+        self.huiSets = []
 
-        # ── PASS 1: compute TWU for every item ──────────────────────────────
-        self.map_item_to_twu  = {}
-        self.map_item_to_twu0 = {}
-
-        with open(input_path, "r") as f:
+    # -------------------------------------------------
+    # First database scan → compute TWU
+    # -------------------------------------------------
+    def first_database_scan(self, input_file):
+        with open(input_file) as f:
             for line in f:
                 line = line.strip()
-                if not line or line[0] in ('#', '%', '@'):
+                if not line or line[0] in "#%@":
                     continue
-                parts              = line.split(":")
-                items              = parts[0].strip().split()
-                transaction_utility = int(parts[1].strip())
 
-                for item_str in items:
-                    item = int(item_str)
-                    self.map_item_to_twu[item]  = self.map_item_to_twu.get(item,  0) + transaction_utility
-                    self.map_item_to_twu0[item] = self.map_item_to_twu0.get(item, 0) + transaction_utility
+                parts = line.split(":")
+                items = list(map(int, parts[0].split()))
+                transaction_utility = int(parts[1])
 
-        # ── PASS 2: build database, keep only items with TWU >= minUtility ──
-        self.database = []
+                for item in items:
+                    self.mapItemToTWU[item] = (
+                        self.mapItemToTWU.get(item, 0) + transaction_utility
+                    )
+                    self.mapItemToTWU0[item] = (
+                        self.mapItemToTWU0.get(item, 0) + transaction_utility
+                    )
 
-        with open(input_path, "r") as f:
+    # -------------------------------------------------
+    # Second database scan → build filtered database
+    # -------------------------------------------------
+    def second_database_scan(self, input_file, minUtility):
+        with open(input_file) as f:
             for line in f:
                 line = line.strip()
-                if not line or line[0] in ('#', '%', '@'):
+                if not line or line[0] in "#%@":
                     continue
-                parts          = line.split(":")
-                items          = parts[0].strip().split()
-                utility_values = parts[2].strip().split()
 
-                revised_transaction = []
-                for i, item_str in enumerate(items):
-                    pair         = Pair()
-                    pair.item    = int(item_str)
-                    pair.utility = int(utility_values[i])
+                parts = line.split(":")
+                items = list(map(int, parts[0].split()))
+                utils = list(map(int, parts[2].split()))
 
-                    if self.map_item_to_twu.get(pair.item, 0) >= min_utility:
-                        revised_transaction.append(pair)
+                revisedTransaction = []
+
+                for i in range(len(items)):
+                    if self.mapItemToTWU.get(items[i], 0) >= minUtility:
+                        revisedTransaction.append(Pair(items[i], utils[i]))
                     else:
-                        # remove item from twu0 map (mirrors Java logic)
-                        self.map_item_to_twu0.pop(pair.item, None)
+                        if items[i] in self.mapItemToTWU0:
+                            del self.mapItemToTWU0[items[i]]
 
-                self.database.append(revised_transaction)
+                self.database.append(revisedTransaction)
 
-        # twuPattern = sorted promising items
-        self.twu_pattern = sorted(self.map_item_to_twu0.keys())
+        self.twuPattern = sorted(self.mapItemToTWU0.keys())
+            # -------------------------------------------------
+    # Fitness calculation (exact Java logic)
+    # -------------------------------------------------
+    def fitCalculate(self, particle, k):
+        if k == 0:
+            return 0
 
-        # initialise pBest list and gBest
-        self.p_best = [Particle(len(self.twu_pattern)) for _ in range(POP_SIZE)]
-        self.g_best  = Particle(len(self.twu_pattern))
+        fitness = 0
 
-        self._check_memory()
-
-        if len(self.twu_pattern) > 0:
-            self._generate_pop(min_utility)
-            for _ in range(ITERATIONS):
-                self._update(min_utility)
-
-        self._write_out(output_path)
-        self._check_memory()
-        self.end_time = time.time()
-
-    # ── population initialisation ────────────────────────────────────────────
-    def _generate_pop(self, min_utility: int):
-        self.percentage = self._roulette_percent()
-
-        for i in range(POP_SIZE):
-            temp_particle = Particle(len(self.twu_pattern))
+        for p in range(len(self.database)):
+            i = 0
             j = 0
-            # k = random number of 1-bits in this particle
-            k = int(random.random() * len(self.twu_pattern))
+            q = 0
+            temp = 0
+            sum_util = 0
+
+            while j < k and q < len(self.database[p]) and i < len(particle):
+                if particle[i] == 1:
+                    if self.database[p][q].item < self.twuPattern[i]:
+                        q += 1
+                    elif self.database[p][q].item == self.twuPattern[i]:
+                        sum_util += self.database[p][q].utility
+                        j += 1
+                        q += 1
+                        temp += 1
+                        i += 1
+                    else:
+                        j += 1
+                        i += 1
+                else:
+                    i += 1
+
+            if temp == k:
+                fitness += sum_util
+
+        return fitness
+
+    # -------------------------------------------------
+    # Roulette percent (same as Java)
+    # -------------------------------------------------
+    def roulettePercent(self):
+        percentage = []
+        sum_twu = sum(self.mapItemToTWU[item] for item in self.twuPattern)
+
+        tempSum = 0
+        for item in self.twuPattern:
+            tempSum += self.mapItemToTWU[item]
+            percentage.append(tempSum / float(sum_twu))
+
+        return percentage
+
+    # -------------------------------------------------
+    # Roulette selection
+    # -------------------------------------------------
+    def rouletteSelect(self, percentage):
+        randNum = random.random()
+        for i in range(len(percentage)):
+            if i == 0:
+                if randNum <= percentage[0]:
+                    return 0
+            elif percentage[i-1] < randNum <= percentage[i]:
+                return i
+        return len(percentage) - 1
+
+    # -------------------------------------------------
+    # Generate initial population (exact Java logic)
+    # -------------------------------------------------
+    def generatePop(self, minUtility):
+
+        percentage = self.roulettePercent()
+
+        dim = len(self.twuPattern)
+
+        self.gBest = Particle(dim)
+
+        for _ in range(POP_SIZE):
+
+            particle = Particle(dim)
+
+            j = 0
+            k = int(random.random() * dim)
 
             while j < k:
-                temp = self._roulette_select(self.percentage)
-                if temp_particle.X[temp] == 0:
+                temp = self.rouletteSelect(percentage)
+                if particle.X[temp] == 0:
+                    particle.X[temp] = 1
                     j += 1
-                    temp_particle.X[temp] = 1
 
-            temp_particle.fitness = self._fit_calculate(temp_particle.X, k)
-            self.population.append(temp_particle)
+            particle.fitness = self.fitCalculate(particle.X, k)
 
-            # initialise pBest
-            self.p_best[i].copy_from(temp_particle)
+            self.population.append(particle)
 
-            # update huiSets
-            if self.population[i].fitness >= min_utility:
-                self._insert(self.population[i])
+            pbest_particle = Particle(dim)
+            pbest_particle.copy_from(particle)
+            self.pBest.append(pbest_particle)
 
-            # initialise gBest
-            if i == 0:
-                self.g_best.copy_from(self.p_best[i])
-            else:
-                if self.p_best[i].fitness > self.g_best.fitness:
-                    self.g_best.copy_from(self.p_best[i])
+            if pbest_particle.fitness > self.gBest.fitness:
+                self.gBest.copy_from(pbest_particle)
 
-            # initialise velocity with random values
-            self.V.append([random.random() for _ in range(len(self.twu_pattern))])
+            # initialize velocity vector
+            velocity = [random.random() for _ in range(dim)]
+            self.V.append(velocity)
 
-    # ── swarm update (one iteration) ─────────────────────────────────────────
-    def _update(self, min_utility: int):
+            # insert HUI
+            if particle.fitness >= minUtility:
+                self.insert(particle)
+    # -------------------------------------------------
+    # Update population (exact Java logic)
+    # -------------------------------------------------
+    def update(self, minUtility):
+
+        dim = len(self.twuPattern)
+
         for i in range(POP_SIZE):
-            k   = 0
-            r1  = random.random()
-            r2  = random.random()
 
-            # update velocity
-            for j in range(len(self.twu_pattern)):
-                new_v = (self.V[i][j]
-                         + r1 * (self.p_best[i].X[j] - self.population[i].X[j])
-                         + r2 * (self.g_best.X[j]    - self.population[i].X[j]))
-                # clamp to [-2, 2]
-                new_v        = max(-2.0, min(2.0, new_v))
-                self.V[i][j] = new_v
+            k = 0
+            r1 = random.random()
+            r2 = random.random()
 
-            # update particle position (sigmoid transfer)
-            for j in range(len(self.twu_pattern)):
+            # --- Update velocity ---
+            for j in range(dim):
+
+                self.V[i][j] = (
+                    self.V[i][j]
+                    + r1 * (self.pBest[i].X[j] - self.population[i].X[j])
+                    + r2 * (self.gBest.X[j] - self.population[i].X[j])
+                )
+
+                if self.V[i][j] < -2.0:
+                    self.V[i][j] = -2.0
+                elif self.V[i][j] > 2.0:
+                    self.V[i][j] = 2.0
+
+            # --- Update particle bits using sigmoid ---
+            for j in range(dim):
+
                 temp1 = random.random()
                 temp2 = 1.0 / (1.0 + math.exp(-self.V[i][j]))
+
                 if temp1 < temp2:
                     self.population[i].X[j] = 1
                     k += 1
                 else:
                     self.population[i].X[j] = 0
 
-            # calculate fitness
-            self.population[i].fitness = self._fit_calculate(self.population[i].X, k)
+            # --- Recalculate fitness ---
+            self.population[i].fitness = self.fitCalculate(
+                self.population[i].X, k
+            )
 
-            # update pBest and gBest
-            if self.population[i].fitness > self.p_best[i].fitness:
-                self.p_best[i].copy_from(self.population[i])
-                if self.p_best[i].fitness > self.g_best.fitness:
-                    self.g_best.copy_from(self.p_best[i])
+            # --- Update pBest ---
+            if self.population[i].fitness > self.pBest[i].fitness:
+                self.pBest[i].copy_from(self.population[i])
 
-            # update huiSets
-            if self.population[i].fitness >= min_utility:
-                self._insert(self.population[i])
+                # --- Update gBest ---
+                if self.pBest[i].fitness > self.gBest.fitness:
+                    self.gBest.copy_from(self.pBest[i])
 
-    # ── insert a particle into huiSets if not already present ────────────────
-    def _insert(self, temp_particle: Particle):
-        parts = []
-        for i in range(len(self.twu_pattern)):
-            if temp_particle.X[i] == 1:
-                parts.append(str(self.twu_pattern[i]))
-        itemset_str = " ".join(parts) + " "   # trailing space mirrors Java
+            # --- Insert HUI ---
+            if self.population[i].fitness >= minUtility:
+                self.insert(self.population[i]) 
+        # -------------------------------------------------
+    # Insert HUI (exact Java logic)
+    # -------------------------------------------------
+    def insert(self, particle):
 
-        if not self.hui_sets:
-            self.hui_sets.append(HUI(itemset_str, temp_particle.fitness))
-        else:
-            for hui in self.hui_sets:
-                if hui.itemset == itemset_str:
-                    return                     # already exists
-            self.hui_sets.append(HUI(itemset_str, temp_particle.fitness))
+        temp_items = []
+        for i in range(len(self.twuPattern)):
+            if particle.X[i] == 1:
+                temp_items.append(str(self.twuPattern[i]))
 
-    # ── roulette-wheel initialisation ────────────────────────────────────────
-    def _roulette_percent(self):
-        total    = sum(self.map_item_to_twu[item] for item in self.twu_pattern)
-        temp_sum = 0
-        pcts     = []
-        for item in self.twu_pattern:
-            temp_sum += self.map_item_to_twu[item]
-            pcts.append(temp_sum / (total + 0.0))
-        return pcts
+        itemset_str = " ".join(temp_items) + " "
 
-    # ── roulette-wheel selection ─────────────────────────────────────────────
-    def _roulette_select(self, percentage):
-        rand_num = random.random()
-        for i, pct in enumerate(percentage):
-            if i == 0:
-                if 0 <= rand_num <= pct:
-                    return 0
-            elif percentage[i - 1] < rand_num <= pct:
-                return i
-        return len(percentage) - 1   # safety fallback
+        # Check duplicate
+        for hui in self.huiSets:
+            if hui.itemset == itemset_str:
+                return
 
-    # ── fitness calculation ───────────────────────────────────────────────────
-    def _fit_calculate(self, temp_particle, k: int) -> int:
-        """
-        Mirrors Java fitCalculate exactly.
-        Sums utilities of the itemset encoded in temp_particle across all transactions.
-        The itemset must appear completely in a transaction to count.
-        """
-        if k == 0:
-            return 0
+        self.huiSets.append(HUI(itemset_str, particle.fitness))
 
-        fitness = 0
-        for transaction in self.database:
-            i = j = q = temp = s = 0
-            while j < k and q < len(transaction) and i < len(temp_particle):
-                if temp_particle[i] == 1:
-                    if transaction[q].item < self.twu_pattern[i]:
-                        q += 1
-                    elif transaction[q].item == self.twu_pattern[i]:
-                        s    += transaction[q].utility
-                        j    += 1
-                        q    += 1
-                        temp += 1
-                        i    += 1
-                    else:   # transaction[q].item > twuPattern[i]
-                        j += 1
-                        i += 1
-                else:
-                    i += 1
-            if temp == k:
-                fitness += s
-        return fitness
+    # -------------------------------------------------
+    # Write output
+    # -------------------------------------------------
+    def writeOut(self, output_file):
 
-    # ── write output ──────────────────────────────────────────────────────────
-    def _write_out(self, output_path: str):
-        with open(output_path, "w", newline="") as f:
-            for hui in self.hui_sets:
-                f.write(f"{hui.itemset}#UTIL: {hui.fitness}\n")
-            f.write("\n")
+        with open(output_file, "w") as writer:
+            for hui in self.huiSets:
+                writer.write(
+                    hui.itemset + "#UTIL: " + str(hui.fitness) + "\n"
+                )
 
-    # ── memory helper ─────────────────────────────────────────────────────────
-    def _check_memory(self):
-        # Python has no direct equivalent; use a rough estimate via sys
-        import tracemalloc
-        if not tracemalloc.is_tracing():
-            tracemalloc.start()
-        current, peak = tracemalloc.get_traced_memory()
-        current_mb = current / 1024 / 1024
-        if current_mb > self.max_memory:
-            self.max_memory = current_mb
+    # -------------------------------------------------
+    # Run algorithm (exact Java structure)
+    # -------------------------------------------------
+    def runAlgorithm(self, input_file, output_file, minUtility):
 
-    # ── stats ─────────────────────────────────────────────────────────────────
-    def print_stats(self):
-        elapsed_ms = (self.end_time - self.start_time) * 1000
-        print("=============  HUIM-BPSO ALGORITHM v.2.36 - STATS =============")
-        print(f" Total time ~ {elapsed_ms:.0f} ms")
-        print(f" Memory ~ {self.max_memory:.4f} MB")
-        print(f" High-utility itemsets count : {len(self.hui_sets)}")
-        print("===================================================")
+        start_time = time.time()
 
+        self.first_database_scan(input_file)
+        self.second_database_scan(input_file, minUtility)
 
-# ─────────────────────────────────────────────
-#  COMPARISON HELPER
-# ─────────────────────────────────────────────
-def compare_outputs(java_output_path: str, python_output_path: str):
-    """
-    Compare Java and Python output files.
-    Both files are expected in format:  <items> #UTIL: <value>
-    Comparison is SET-based (order-independent).
-    """
-    def parse_output(path):
-        results = {}
-        if not os.path.exists(path):
-            return results
-        with open(path, "r") as f:
-            for line in f:
-                line = line.strip()
-                if not line or "#UTIL:" not in line:
-                    continue
-                itemset_part, util_part = line.split("#UTIL:")
-                itemset = frozenset(int(x) for x in itemset_part.strip().split())
-                util    = int(util_part.strip())
-                results[itemset] = util
-        return results
+        if len(self.twuPattern) > 0:
 
-    java_results   = parse_output(java_output_path)
-    python_results = parse_output(python_output_path)
+            self.generatePop(minUtility)
 
-    print("\n========== OUTPUT COMPARISON ==========")
-    print(f"  Java   output : {len(java_results)} itemsets")
-    print(f"  Python output : {len(python_results)} itemsets")
+            for _ in range(ITERATIONS):
+                self.update(minUtility)
 
-    only_in_java   = set(java_results)   - set(python_results)
-    only_in_python = set(python_results) - set(java_results)
-    in_both        = set(java_results)   & set(python_results)
+        self.writeOut(output_file)
 
-    util_mismatches = []
-    for itemset in in_both:
-        if java_results[itemset] != python_results[itemset]:
-            util_mismatches.append((itemset, java_results[itemset], python_results[itemset]))
+        end_time = time.time()
 
-    if not only_in_java and not only_in_python and not util_mismatches:
-        print("  ✅  MATCH — outputs are identical!")
-    else:
-        print("  ❌  MISMATCH detected:")
-        if only_in_java:
-            print(f"    In Java only   ({len(only_in_java)}):")
-            for s in sorted(only_in_java, key=lambda x: sorted(x)):
-                print(f"      {sorted(s)}  #UTIL: {java_results[s]}")
-        if only_in_python:
-            print(f"    In Python only ({len(only_in_python)}):")
-            for s in sorted(only_in_python, key=lambda x: sorted(x)):
-                print(f"      {sorted(s)}  #UTIL: {python_results[s]}")
-        if util_mismatches:
-            print(f"    Utility mismatch ({len(util_mismatches)}):")
-            for itemset, ju, pu in util_mismatches:
-                print(f"      {sorted(itemset)}  Java={ju}  Python={pu}")
-    print("=======================================\n")
+        print("============= HUIM-BPSO (Python) =============")
+        print("Total time ~", round((end_time - start_time) * 1000, 2), "ms")
+        print("High-utility itemsets count :", len(self.huiSets))
+        print("==============================================")
 
-    return len(only_in_java) == 0 and len(only_in_python) == 0 and len(util_mismatches) == 0
-
-
-def resolve_default_input_path(script_dir: str) -> str:
-    """Find the bundled dataset across common project layouts."""
-    candidates = [
-        os.path.join(script_dir, "contextHUIM.txt"),
-        os.path.join(script_dir, "..", "Java", "src", "contextHUIM.txt"),
-        os.path.join(script_dir, "..", "Java", "bin", "contextHUIM.txt"),
-        os.path.join(script_dir, "..", "contextHUIM.txt"),
-    ]
-
-    for candidate in candidates:
-        path = os.path.abspath(candidate)
-        if os.path.exists(path):
-            return path
-
-    # Keep old relative default behavior as a final fallback.
-    return "contextHUIM.txt"
-
-
-# ─────────────────────────────────────────────
-#  MAIN
-# ─────────────────────────────────────────────
-def main():
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-
-    parser = argparse.ArgumentParser(description="HUIM-BPSO High Utility Itemset Mining")
-    parser.add_argument("--input",       default=None,  help="Input transaction file")
-    parser.add_argument("--output",      default=None, help="Python output file")
-    parser.add_argument("--min_utility", type=int, default=25,        help="Minimum utility threshold")
-    parser.add_argument("--compare",     action="store_true",         help="Compare with a Java output file")
-    parser.add_argument("--java_output", default=None,   help="Java output file for comparison")
-    args = parser.parse_args()
-
-    input_path = os.path.abspath(args.input) if args.input else resolve_default_input_path(script_dir)
-    output_path = os.path.abspath(args.output) if args.output else os.path.join(script_dir, "python_output.txt")
-    java_output_path = os.path.abspath(args.java_output) if args.java_output else os.path.join(script_dir, "..", "Java", "output.txt")
-
-    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
-
-    if not os.path.exists(input_path):
-        print(f"Input file not found: {input_path}")
-        print("Use --input <path> or place contextHUIM.txt in Python/, Java/src/, Java/bin/, or project root.")
-        sys.exit(1)
-
-    print(f"Running HUIM-BPSO  |  input={input_path}  |  min_utility={args.min_utility}")
+   # -------------------------------------------------
+# MAIN
+# -------------------------------------------------
+if __name__ == "__main__":
 
     algo = AlgoHUIM_BPSO()
-    algo.run_algorithm(input_path, output_path, args.min_utility)
-    algo.print_stats()
-
-    print(f"\nOutput written to: {output_path}")
-
-    # Optional comparison
-    if args.compare:
-        if not os.path.exists(java_output_path):
-            print(f"[compare] Java output file not found: {java_output_path}")
-            print("          Run the Java version first and save its output, then re-run with --compare")
-        else:
-            compare_outputs(java_output_path, output_path)
-
-
-if __name__ == "__main__":
-    main()
+    algo.runAlgorithm(INPUT_FILE, OUTPUT_FILE, MIN_UTILITY)                                
