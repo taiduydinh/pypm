@@ -8,16 +8,9 @@ from itertools import combinations
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-if os.path.basename(CURRENT_DIR) == "src":
-    BASE_DIR = os.path.dirname(CURRENT_DIR)
-    SRC_DIR = CURRENT_DIR
-else:
-    BASE_DIR = CURRENT_DIR
-    SRC_DIR = os.path.join(BASE_DIR, "src")
-
-DATA_FILE = os.path.join(SRC_DIR, "contextHAUIMMAU.txt")
-MAU_FILE = os.path.join(SRC_DIR, "MAU_Utility.txt")
-OUTPUT_FILE = os.path.join(BASE_DIR, "#110_output.txt")
+DATA_FILE = os.path.join(CURRENT_DIR, "contextHAUIMMAU.txt")
+MAU_FILE = os.path.join(CURRENT_DIR, "MAU_Utility.txt")
+OUTPUT_FILE = os.path.join(CURRENT_DIR, "output.txt")
 
 GLMAU = 0  # <<< CHANGE GLOBAL LEAST MAU HERE
 
@@ -146,13 +139,12 @@ class HAUIM_MMAU:
     # Sort exactly like Java:
     # 1) by itemset length (level order)
     # 2) lexicographically within same length
+        self.high_itemsets.sort(key=lambda x: (len(x[0]), x[0]))
 
-    self.high_itemsets.sort(key=lambda x: (len(x[0]), x[0]))
-
-    with open(OUTPUT_FILE, "w") as f:
-        for items, util in self.high_itemsets:
-            line = " ".join(map(str, items))
-            f.write(f"{line} #AUTIL: {util}\n")
+        with open(OUTPUT_FILE, "w") as f:
+            for items, util in self.high_itemsets:
+                line = " ".join(map(str, items))
+                f.write(f"{line} #AUTIL: {util}\n")
     def print_stats(self):
         print("============= HAUIM-MMAU PYTHON VERSION =============")
         print("Total time ~", int((self.end_time - self.start_time)*1000), "ms")
@@ -168,8 +160,8 @@ if __name__ == "__main__":
 
     if not os.path.exists(DATA_FILE):
         print("Dataset not found.")
-        print("Looking in:", SRC_DIR)
-        print("Files:", os.listdir(SRC_DIR))
+        print("Looking in:", CURRENT_DIR)
+        print("Files:", os.listdir(CURRENT_DIR))
         exit()
 
     db = Database()
