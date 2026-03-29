@@ -7,6 +7,8 @@ from typing import List, Dict, Optional, Tuple, Set, Iterable
 import os
 import sys
 import time
+from pathlib import Path
+
 
 # ---- Best-effort memory (mac/linux) ----
 def _memory_mb_best_effort() -> float:
@@ -752,12 +754,40 @@ class AlgoHGB:
 
 # ----------------------------- Main -----------------------------
 
+def file_to_path(filename: str) -> str:
+    """
+    Look for the file next to hgb.py first, then try a common fallback.
+    """
+    here = Path(__file__).resolve().parent
+
+    p1 = here / filename
+    if p1.exists():
+        return str(p1)
+
+    p2 = Path("Java") / "src" / "hgb" / filename
+    if p2.exists():
+        return str(p2.resolve())
+
+    raise FileNotFoundError(
+        f"Could not locate {filename}. Tried:\n- {p1}\n- {p2.resolve()}"
+    )
+
+
 def main():
     # Usage:
     # python3 hgb.py [input_path] [output_path] [min_utility] [minconf]
-    input_path = sys.argv[1] if len(sys.argv) >= 2 else os.path.join(os.getcwd(), "Java//src//DB_Utility.txt")
-    output_path = sys.argv[2] if len(sys.argv) >= 3 else os.path.join(os.getcwd(), "Java//src//output_py.txt")
-    min_utility = int(sys.argv[3]) if len(sys.argv) >= 4 else 25
+
+    if len(sys.argv) >= 2:
+        input_path = sys.argv[1]
+    else:
+        input_path = file_to_path("DB_Utility.txt")
+
+    if len(sys.argv) >= 3:
+        output_path = sys.argv[2]
+    else:
+        output_path = str(Path(__file__).resolve().parent / "output_py.txt")
+
+    min_utility = int(sys.argv[3]) if len(sys.argv) >= 4 else 30
     minconf = float(sys.argv[4]) if len(sys.argv) >= 5 else 0.5
 
     if not os.path.exists(input_path):
@@ -773,6 +803,9 @@ def main():
     algo.runAlgorithm(results, min_utility, minconf)
     algo.writeRulesToFile(output_path)
     algo.printStats()
+
+    print(f"Input file:  {Path(input_path).resolve()}")
+    print(f"Output file: {Path(output_path).resolve()}")
 
 
 if __name__ == "__main__":
