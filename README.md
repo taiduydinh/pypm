@@ -56,11 +56,7 @@ The returned pattern sets and associated values, such as support or utility, are
 
 ## Installation
 
-### Install from source
-
-Clone the repository and install the required dependencies:
+### Install from PyPI
 
 ```bash
-git clone https://github.com/taiduydinh/pypatternminer.git
-cd pypatternminer
-pip install -r requirements.txt
+pip install pypatternminer
