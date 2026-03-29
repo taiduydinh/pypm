@@ -1,13 +1,13 @@
 # lcim.py
 # Python port of SPMF AlgoLCIM + CostList (LCIM - Cost Efficient Itemset Mining)
-# Based on Java code by Philippe Fournier-Viger, M. Saqib Nawaz (2008-2021)
 
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 import math
 import time
-import resource
+import os
+import psutil
 
 
 # -----------------------------
@@ -29,9 +29,8 @@ class MemoryLogger:
         self._max_mb = 0.0
 
     def checkMemory(self) -> None:
-        ru = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-        # macOS: bytes; Linux: KB
-        mb = (ru / (1024 * 1024)) if ru > 10_000_000 else (ru / 1024.0)
+        process = psutil.Process(os.getpid())
+        mb = process.memory_info().rss / (1024 * 1024)
         if mb > self._max_mb:
             self._max_mb = mb
 
@@ -403,10 +402,13 @@ class AlgoLCIM:
 # MainTestLCIM equivalent
 # -----------------------------
 def main():
-    input_file = "Java//src//DB_cost.txt"
-    output_file = "Java//src//output_py.txt"
 
-    minutil = 28.0
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+    input_file = os.path.join(BASE_DIR, "DB_cost.txt")
+    output_file = os.path.join(BASE_DIR, "output_py.txt")
+
+    minutil = 10.0
     maxcost = 10.0
     minsup = 0.3
 
