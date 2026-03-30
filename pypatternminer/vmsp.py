@@ -875,8 +875,10 @@ def main_save_to_file():
 
 
 def main_save_to_memory():
-    input_path = fileToPath("contextPrefixSpan.txt")
-    output_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "outputpython.txt")
+    
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    input_path = os.path.join(script_dir, "contextPrefixSpan.txt")
+    output_path = os.path.join(script_dir, "output_py.txt")
 
     algo = AlgoVMSP()
     algo.setMaximumPatternLength(8)
