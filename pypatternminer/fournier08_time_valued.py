@@ -1,5 +1,5 @@
 # This is the implementation of the algorithm Mining Sequential Patterns with Time Constraints from a Time-Extended Sequence Database containing Valued Items 
-# described in the paper:
+# described in the paper: https://www.philippe-fournier-viger.com/spmf/SequentialPatterns_TimeConstraintsValuesItems.php
 # Fournier-Viger, P., Nkambou, R & Mephu Nguifo, E. (2008), A Knowledge Discovery Framework for Learning Task Models from User Interactions in Intelligent Tutoring Systems. Proceedings of the 7th Mexican International Conference on Artificial Intelligence (MICAI 2008). LNAI 5317, Springer, pp. 765-778.
 
 import math

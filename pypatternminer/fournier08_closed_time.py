@@ -1,3 +1,6 @@
+# This is the implementation of the algorithm Mining Closed Sequential Patterns with Time Constraints from a Time-Extended Sequence Database
+# https://www.philippe-fournier-viger.com/spmf/ClosedSequentialPatterns_TimeConstraints.php
+
 import math
 import os
 import time
