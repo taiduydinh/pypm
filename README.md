@@ -168,7 +168,7 @@ A formal citation entry can be added here in future releases.
 
 **pypatternminer** is intended to serve as both a practical software library and a research infrastructure for the pattern-mining community. By combining algorithmic breadth, reproducibility, and public accessibility, the project aims to support researchers, educators, and practitioners working on pattern mining and related areas.
 
-## License and Attribution
+## License
 
 pypatternminer is released under the **GNU General Public License v3.0 (GPLv3)**.
 
